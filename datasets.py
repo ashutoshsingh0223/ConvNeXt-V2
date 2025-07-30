@@ -13,6 +13,32 @@ from timm.data.constants import \
     IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
 from timm.data import create_transform
 
+from PIL import Image
+
+class ImageFilelist(datasets.VisionDataset):
+    def __init__(self, root, filename, transforms = None, transform = None, target_transform = None):
+        super().__init__(root, transforms, transform, target_transform)
+
+        self.filepath = os.path.join(root, filename)
+        self.data_list = []
+        with open(self.filepath, 'r') as f:
+            for line in f.readlines():
+                image_path, image_label = line.strip().split(",")
+                self.data_list.append((image_path, int(image_label.strip())))
+
+    def __getitem__(self, index):
+        impath, target = self.data_list[index]
+        img = Image.open(os.path.join(self.root, impath))
+        if self.transform is not None:
+            img = self.transform(img)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+        
+        return img, target
+
+    def __len__(self):
+        return len(self.data_list)
+
 def build_dataset(is_train, args):
     transform = build_transform(is_train, args)
 

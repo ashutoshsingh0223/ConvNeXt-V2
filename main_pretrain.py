@@ -20,8 +20,9 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
 import timm
-assert timm.__version__ == "0.3.2"  # version check
+# assert timm.__version__ == "0.3.2"  # version check
 import timm.optim.optim_factory as optim_factory
+from timm.optim import param_groups_weight_decay
 
 from engine_pretrain import train_one_epoch
 import models.fcmae as fcmae
@@ -29,6 +30,8 @@ import models.fcmae as fcmae
 import utils
 from utils import NativeScalerWithGradNormCount as NativeScaler
 from utils import str2bool
+
+from datasets import ImageFilelist
 
 def get_args_parser():
     parser = argparse.ArgumentParser('FCMAE pre-training', add_help=False)
@@ -68,18 +71,21 @@ def get_args_parser():
                         help='dataset path')
     parser.add_argument('--output_dir', default='',
                         help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default=None,
+    parser.add_argument('--log_dir', default="./data/",
                         help='path where to tensorboard log')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--resume', default='',
                         help='resume from checkpoint')
+    
+    parser.add_argument('--resume-encoder', default='',
+                        help='Resume for sparse encoder in the FCMAE model.')
 
-    parser.add_argument('--auto_resume', type=str2bool, default=True)
+    parser.add_argument('--auto_resume', type=str2bool, default=False)
     parser.add_argument('--save_ckpt', type=str2bool, default=True)
-    parser.add_argument('--save_ckpt_freq', default=1, type=int)
-    parser.add_argument('--save_ckpt_num', default=3, type=int)
+    parser.add_argument('--save_ckpt_freq', default=2, type=int)
+    parser.add_argument('--save_ckpt_num', default=5, type=int)
 
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
@@ -91,9 +97,9 @@ def get_args_parser():
     parser.add_argument('--crop_pct', type=float, default=None)
 
     # distributed training parameters
-    parser.add_argument('--world_size', default=1, type=int,
+    parser.add_argument('--world_size', '--world-size', default=1, type=int,
                         help='number of distributed processes')
-    parser.add_argument('--local_rank', default=-1, type=int)
+    parser.add_argument('--local_rank', "--local-rank", default=-1, type=int)
     parser.add_argument('--dist_on_itp', type=str2bool, default=False)
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
@@ -101,6 +107,7 @@ def get_args_parser():
 
 def main(args):
     utils.init_distributed_mode(args)
+    print(f'Global Rank: {os.environ["RANK"]}, Local Rank: {os.environ["LOCAL_RANK"]}, World Size: {os.environ["WORLD_SIZE"]}')
 
     print(args)
     device = torch.device(args.device)
@@ -118,9 +125,10 @@ def main(args):
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
-    print(dataset_train)
+    # dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+    dataset_train = ImageFilelist(args.data_path, "pretrain.txt", transform=transform_train)
 
+    print(dataset_train)
     num_tasks = utils.get_world_size()
     global_rank = utils.get_rank()
 
@@ -153,6 +161,11 @@ def main(args):
     )
     model.to(device)
 
+    if args.resume_encoder:
+        encoder_ckpt = torch.load(args.resume_encoder)
+        enc_load_msg = model.encoder.load_state_dict(encoder_ckpt["model"])
+        print(f"Loaded encoder weights: {enc_load_msg}")
+
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -173,9 +186,17 @@ def main(args):
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+        print("model dist done")
         model_without_ddp = model.module
+        torch.distributed.barrier()
 
-    param_groups = optim_factory.add_weight_decay(model_without_ddp, args.weight_decay)
+    # param_groups = optim_factory.add_weight_decay(model_without_ddp, args.weight_decay)
+    param_groups = param_groups_weight_decay(
+        model_without_ddp,
+        weight_decay=args.weight_decay,
+        no_weight_decay_list=[]
+    )
+    print("param groups done")
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     print(optimizer)
     loss_scaler = NativeScaler()

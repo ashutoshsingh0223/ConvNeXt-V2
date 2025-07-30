@@ -18,7 +18,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from torch._six import inf
+# from torch._six import inf
 
 from tensorboardX import SummaryWriter
 from collections import OrderedDict
@@ -319,6 +319,8 @@ def init_distributed_mode(args):
         os.environ['WORLD_SIZE'] = str(args.world_size)
         # ["RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT", "LOCAL_RANK"]
     elif 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        print("---------------------here-----------------------------")
+        print(f'Global Rank: {os.environ["RANK"]}, Local Rank: {os.environ["LOCAL_RANK"]}, World Size: {os.environ["WORLD_SIZE"]}')
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ['WORLD_SIZE'])
         args.gpu = int(os.environ['LOCAL_RANK'])
@@ -340,9 +342,8 @@ def init_distributed_mode(args):
     args.dist_backend = 'nccl'
     print('| distributed init (rank {}): {}, gpu {}'.format(
         args.rank, args.dist_url, args.gpu), flush=True)
-    torch.distributed.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                         world_size=args.world_size, rank=args.rank)
-    torch.distributed.barrier()
+    torch.distributed.init_process_group(backend=args.dist_backend, init_method="env://")
+    # torch.distributed.barrier()
     setup_for_distributed(args.rank == 0)
 
 def all_reduce_mean(x):
@@ -441,7 +442,7 @@ def get_grad_norm_(parameters, norm_type: float = 2.0) -> torch.Tensor:
     if len(parameters) == 0:
         return torch.tensor(0.)
     device = parameters[0].grad.device
-    if norm_type == inf:
+    if norm_type == float('inf'):
         total_norm = max(p.grad.detach().abs().max().to(device) for p in parameters)
     else:
         total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), norm_type).to(device) for p in parameters]), norm_type)
