@@ -32,7 +32,9 @@ class FCMAE(nn.Module):
                 decoder_embed_dim=512,
                 patch_size=32,
                 mask_ratio=0.6,
-                norm_pix_loss=False):
+                norm_pix_loss=False,
+                drop_path_rate=0.,
+                freeze_encoder_stages=-1):
         super().__init__()
 
         # configs
@@ -48,7 +50,7 @@ class FCMAE(nn.Module):
 
         # encoder
         self.encoder = SparseConvNeXtV2(
-            in_chans=in_chans, depths=depths, dims=dims, D=2)
+            in_chans=in_chans, depths=depths, dims=dims, D=2, drop_path_rate=drop_path_rate, frozen_stages=freeze_encoder_stages, patch_size=patch_size)
         # decoder
         self.proj = nn.Conv2d(
             in_channels=dims[-1], 
@@ -115,6 +117,54 @@ class FCMAE(nn.Module):
         x = torch.einsum('nhwpqc->nchpwq', x)
         imgs = x.reshape(shape=(x.shape[0], 3, h * p, h * p))
         return imgs
+    
+
+    def generate_foreground_aware_mask(self, foreground_masks, foreground_weight=0.8):
+
+        # patchify foreground mask
+        N, h_fg_mask, w_fg_mask = foreground_masks.shape
+        H_p, W_p = h_fg_mask // self.patch_size, w_fg_mask // self.patch_size
+        foreground_masks = foreground_masks[:, :H_p * self.patch_size, :W_p * self.patch_size]  # crop if needed
+
+        foreground_masks = foreground_masks.reshape(N, H_p, self.patch_size, W_p, self.patch_size)
+        foreground_patch_masks = foreground_masks.float().mean(dim=(2, 4)) > 0.25  # 25% of patch is foreground
+
+        # [batch_size, L]
+        foreground_patch_masks = foreground_patch_masks.view(N, -1)
+
+        L = foreground_patch_masks.shape[1]
+        num_masked = int(self.mask_ratio * L)
+
+        final_masks = torch.zeros((N, L), dtype=torch.bool)
+        num_fg_masked = int(num_masked * foreground_weight)
+        num_bg_masked = num_masked - num_fg_masked
+
+        for i in range(N):
+            fg_idx = torch.nonzero(foreground_patch_masks[i], as_tuple=False).squeeze()
+            bg_idx = torch.nonzero(~foreground_patch_masks[i], as_tuple=False).squeeze()
+
+            num_fg_i = min(num_fg_masked, fg_idx.numel())
+            num_bg_i = min(num_bg_masked, bg_idx.numel())
+
+            total_i = num_fg_i + num_bg_i
+
+            if total_i < num_masked:
+                # Fill remainder from any available patches
+                remaining = num_masked - total_i
+                all_idx = torch.cat([fg_idx, bg_idx])
+                extra_idx = all_idx[torch.randperm(all_idx.numel())[:remaining]]
+            else:
+                extra_idx = torch.tensor([], dtype=torch.long)
+
+            fg_masked = fg_idx[torch.randperm(fg_idx.numel())[:num_fg_i]]
+            bg_masked = bg_idx[torch.randperm(bg_idx.numel())[:num_bg_i]]
+
+            masked = torch.cat([fg_masked, bg_masked, extra_idx])
+            # binary mask: 0 is keep 1 is remove, following gen_random_mask
+            final_masks[i, masked] = 1
+        
+        return final_masks
+
 
     def gen_random_mask(self, x, mask_ratio):
         N = x.shape[0]
@@ -152,6 +202,7 @@ class FCMAE(nn.Module):
         x = self.proj(x)
         # append mask token
         n, c, h, w = x.shape
+        # print(x.shape, mask.shape)
         mask = mask.reshape(-1, h, w).unsqueeze(1).type_as(x)
         mask_token = self.mask_token.repeat(x.shape[0], 1, x.shape[2], x.shape[3])
         x = x * (1. - mask) + mask_token * mask
@@ -183,7 +234,7 @@ class FCMAE(nn.Module):
         loss = (loss * mask).sum() / mask.sum()  # mean loss on removed patches
         return loss
 
-    def forward(self, imgs, labels=None, mask_ratio=0.6):
+    def forward(self, imgs, labels, mask_ratio):
         x, mask = self.forward_encoder(imgs, mask_ratio)
         pred = self.forward_decoder(x, mask)
         loss = self.forward_loss(imgs, pred, mask)

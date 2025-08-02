@@ -5,6 +5,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+from itertools import chain
 
 import torch
 import torch.nn as nn
@@ -72,13 +73,18 @@ class SparseConvNeXtV2(nn.Module):
                  depths=[3, 3, 9, 3], 
                  dims=[96, 192, 384, 768], 
                  drop_path_rate=0., 
-                 D=3):
+                 D=3,
+                 patch_size=32,
+                 frozen_stages=-1):
         super().__init__()
         self.depths = depths
         self.num_classes = num_classes
+        self.patch_size = patch_size
         self.downsample_layers = nn.ModuleList() # stem and 3 intermediate downsampling conv layers
         stem = nn.Sequential(
-            nn.Conv2d(in_chans, dims[0], kernel_size=4, stride=4),
+            # Change from kernel_size=4 and stride=4, a result of harcoded patch_size=32.
+            # // 8 because rest of the downsampling layers produce an overall stride of 8.
+            nn.Conv2d(in_chans, dims[0], kernel_size=self.patch_size // 8, stride=self.patch_size // 8),
             LayerNorm(dims[0], eps=1e-6, data_format="channels_first")
         )
         self.downsample_layers.append(stem)
@@ -99,7 +105,10 @@ class SparseConvNeXtV2(nn.Module):
             self.stages.append(stage)
             cur += depths[i]
 
+        self.frozen_stages = frozen_stages
         self.apply(self._init_weights)
+
+        self._freeze_stages()
         
     def _init_weights(self, m):
         if isinstance(m, MinkowskiConvolution):
@@ -118,10 +127,30 @@ class SparseConvNeXtV2(nn.Module):
         return mask.reshape(-1, p, p).\
                     repeat_interleave(scale, axis=1).\
                     repeat_interleave(scale, axis=2)
+    
+
+    def _freeze_stages(self):
+        for i in range(self.frozen_stages):
+            downsample_layer = self.downsample_layers[i]
+            stage = self.stages[i]
+            downsample_layer.eval()
+            stage.eval()
+            for param in chain(downsample_layer.parameters(),
+                               stage.parameters()):
+                param.requires_grad = False
 
     def forward(self, x, mask):
-        num_stages = len(self.stages)
-        mask = self.upsample_mask(mask, 2**(num_stages-1))        
+        # NOTE: Harcoded for  Stem kernel_size=stride=4 and patch size 32.
+        # num_stages = len(self.stages)
+        # scale = 2 ** (num_stages-1)
+        
+        # Calculate scale for patch size different then 32.
+        # The mask needs to be upsampled to meet the downsampled image
+        # dimensions after the `stem` layer.
+        # TODO: Stem has kernel_size=stride=4 which was set for patch size of 32, but it could be set 
+        # to anything else as well, if less downsampling required.
+        scale = int(x.shape[2] // self.downsample_layers[0][0].kernel_size[0] / (mask.shape[1] ** .5))
+        mask = self.upsample_mask(mask, scale)        
         mask = mask.unsqueeze(1).type_as(x)
         
         # patch embedding

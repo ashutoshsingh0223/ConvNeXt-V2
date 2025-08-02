@@ -1,3 +1,4 @@
 env
 MinkowskiEngine
 data
+__pycache__

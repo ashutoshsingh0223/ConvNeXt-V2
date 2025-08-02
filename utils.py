@@ -577,3 +577,24 @@ def remap_checkpoint_keys(ckpt):
         elif 'grn' in k:
             new_ckpt[k] = v.unsqueeze(0).unsqueeze(1)
     return new_ckpt
+
+
+def get_batch_foreground_masks(img_size, annotations):
+    """
+    Args:
+        batch_size: number of images
+        img_size: (H, W)
+        bboxes: list of [x1, y1, x2, y2]
+    Returns:
+        Tensor of shape (B, H, W), dtype=torch.bool
+    """
+    H, W = img_size
+    masks = torch.zeros((H, W), dtype=torch.bool)
+
+    
+    for box in "boxes":
+        x1, y1, x2, y2 = map(int, box)
+        masks[y1:y2, x1:x2] = 1
+        
+
+    return masks  # shape: (B, H, W)

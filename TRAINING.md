@@ -27,16 +27,53 @@ python submitit_pretrain.py --nodes 8 --ngpus 8 \
 The following commands run the pre-training on a single machine:
 
 ```
-python -m torch.distributed.launch --nproc_per_node=8 main_pretrain.py \
---model convnextv2_base \
---batch_size 64 --update_freq 8 \
+python -m torch.distributed.launch \
+--nproc_per_node=1 \
+--node_rank=0 \
+--master_addr="10.53.231.90" \
+--master_port=8080 \
+  main_pretrain.py \
+--model convnextv2_tiny \
+--batch_size 64 \
+--update_freq 8 \
 --blr 1.5e-4 \
---epochs 1600 \
---warmup_epochs 40 \
---data_path /path/to/imagenet-1k \
---output_dir /path/to/save_results
+--epochs 400 \
+--warmup_epochs 10 \
+--data_path ./data \
+--resume-encoder data/sparseconvnextv2_tiny_1k_224_fcmae.pt \
+--output_dir ./data/convnext-v2-base-ckpts
 ```
 
+```
+python -m torch.distributed.launch \
+--nproc_per_node=2 \
+--node_rank=1 \
+--master_addr="10.53.231.90" \
+--master_port=8080 \
+  main_pretrain.py \
+--model convnextv2_tiny \
+--batch_size 64 \
+--update_freq 8 \
+--blr 1.5e-4 \
+--epochs 400 \
+--warmup_epochs 10 \
+--data_path ./data \
+--resume-encoder data/sparseconvnextv2_tiny_1k_224_fcmae.pt \
+--output_dir ./data/convnext-v2-base-ckpts
+```
+
+
+```
+python -m torch.distributed.launch --nproc_per_node=2  --nnodes=2 --node_rank=1 --master_addr="10.53.231.90" --master_port=8080   main_pretrain.py --model convnextv2_huge --batch_size 32 --update_freq 8 --blr 1.5e-4 --epoc
+hs 200 --warmup_epochs 5 --data_path ./data --resume-encoder data/sparseconvnextv2_huge_1k_224_fcmae.pt --
+output_dir ./data/convnext-v2-huge-ckpts --log_dir ./data/convnext-v2-huge-ckpts
+```
+
+
+```
+python -m torch.distributed.launch --nproc_per_node=1 --nnodes=2 --node_rank=0 --master_addr="10.53.231.90" --master_port=8080   main_pretrain.py --model convnextv2_huge --batch_size 32 --update_freq 8 --blr 1.5e-4 --epochs 200 --warmup_epochs 5 --data_path ./data --resume-encoder data/sparseconvnextv2_huge_1k_224_fcmae.pt --
+output_dir ./data/convnext-v2-huge-ckpts --log_dir ./data/convnext-v2-huge-ckpts
+```
 
 ## ImageNet-1K Fine-Tuning
 

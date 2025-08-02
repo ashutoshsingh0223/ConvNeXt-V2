@@ -50,11 +50,13 @@ def get_args_parser():
                         help='image input size')
     parser.add_argument('--mask_ratio', default=0.6, type=float,
                         help='Masking ratio (percentage of removed patches).')
+    parser.add_argument('--patch_size', default=32, type=int, help="patch size in pixels.")
     parser.add_argument('--norm_pix_loss', action='store_true',
                         help='Use (per-patch) normalized pixels as targets for computing loss')
     parser.set_defaults(norm_pix_loss=True)
     parser.add_argument('--decoder_depth', type=int, default=1)
     parser.add_argument('--decoder_embed_dim', type=int, default=512)
+    parser.add_argument('--drop-path-rate', type=float, default=0.)
     
     # Optimizer parameters
     parser.add_argument('--weight_decay', type=float, default=0.05,
@@ -81,6 +83,8 @@ def get_args_parser():
     
     parser.add_argument('--resume-encoder', default='',
                         help='Resume for sparse encoder in the FCMAE model.')
+    parser.add_argument('--frozen-encoder-stages', default=-1, type=int,
+                        help='Frozen encoder stages for training.')
 
     parser.add_argument('--auto_resume', type=str2bool, default=False)
     parser.add_argument('--save_ckpt', type=str2bool, default=True)
@@ -121,7 +125,8 @@ def main(args):
     
     # simple augmentation
     transform_train = transforms.Compose([
-            transforms.RandomResizedCrop(args.input_size, scale=(0.2, 1.0), interpolation=3),  # 3 is bicubic
+            # transforms.RandomResizedCrop(args.input_size, scale=(0.2, 1.0), interpolation=3),  # 3 is bicubic
+            transforms.RandomCrop(224),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
@@ -155,9 +160,12 @@ def main(args):
     # define the model
     model = fcmae.__dict__[args.model](
         mask_ratio=args.mask_ratio,
+        patch_size=args.patch_size,
         decoder_depth=args.decoder_depth,
         decoder_embed_dim=args.decoder_embed_dim,
-        norm_pix_loss=args.norm_pix_loss
+        norm_pix_loss=args.norm_pix_loss,
+        drop_path_rate=args.drop_path_rate,
+        freeze_encoder_stages=args.frozen_encoder_stages
     )
     model.to(device)
 
@@ -165,6 +173,7 @@ def main(args):
         encoder_ckpt = torch.load(args.resume_encoder)
         enc_load_msg = model.encoder.load_state_dict(encoder_ckpt["model"])
         print(f"Loaded encoder weights: {enc_load_msg}")
+
 
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
